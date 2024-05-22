@@ -1,9 +1,12 @@
 #version 330 core
 
 uniform mat4 projection;
-in vec2 v_position;
-in vec2 tex_coord;
-in vec4 v_color;
+// POS_LOCATION const
+layout(location = 0) in vec2 v_position;
+// TEX_COORD_LOCATION const
+layout(location = 1) in vec2 tex_coord;
+// COLOR_LOCATION const
+layout(location = 2) in vec4 v_color;
 
 out vec4 frag_color;
 out vec2 frag_uv;
