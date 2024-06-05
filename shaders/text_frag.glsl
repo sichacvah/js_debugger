@@ -10,5 +10,5 @@ void main(void) {
   //float alpha = smoothstep(0.5 - aaf, 0.5 + aaf, d);
   //gl_FragColor = vec4(frag_color.rgb, alpha * frag_color.a / 255.0f);
 
-  gl_FragColor =  vec4(frag_color.rgb / 255.0f, texture2D(tex, frag_uv.st).r);
+  gl_FragColor = vec4(frag_color.rgb / 255.0f, texture(tex, frag_uv.st).a); 
 }
