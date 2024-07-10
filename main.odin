@@ -31,6 +31,12 @@ Layout :: struct {
   is_clickable: bool,
 }
 
+CONTAINER_STACK_SIZE :: 256
+Container :: struct {
+  pos: [2]i32,
+  size: [2]i32,
+}
+
 ID :: distinct uint
 
 UIState :: struct {
@@ -42,7 +48,6 @@ UIState :: struct {
   layouts: renderer.ItemsStack(Layout, LAYOUT_STACK_SIZE),
   r: ^renderer.Renderer,
 }
-
 
 push_layout :: proc(state: ^UIState, layout: Layout) {
   assert(state.layouts.id < LAYOUT_STACK_SIZE)
@@ -333,12 +338,8 @@ convert_to_js :: proc(val: json.Value) -> JSValue {
 }
 
 json_str := `
-{"a": 10, "b": "string", v: true, c: {b: 1}}
+[{"a": 10, "b": "string", v: true, c: {b: 1}, g: [1, 2, 3]}, 2, [{a: {b : {c : [true, false, 10]}}}]]
 `
-
-
-//{"a": 10, "b": "string", "v": true, "arr": [1, 2, -13]}
-// , 10, {b: {c: 100.0}, "flag": true}, true, "just string"
 
 conversion_buffer := [1024]byte{}
 // #e0def4
@@ -426,39 +427,94 @@ draw_closed_composite :: proc(
 	}
 }
 
+open_close_json :: #force_inline proc(
+  ui_state: ^UIState,
+  value:    ^JSComposite,
+) -> bool {
+  symbol := value.is_opened ? "▼" : "▶"
+  return text_button(ui_state, ID(uintptr(value)), symbol)
+}
+
+draw_opened_value :: #force_inline proc(
+  ui_state: ^UIState,
+  comp: ^JSComposite,
+) {
+  switch &c in comp.val {
+    case JSObject:
+      label(ui_state, "{", color = COLOR_SUBTLE) 
+      end_layout(ui_state)
+      add_json_offset(ui_state)
+      draw_object_values(ui_state, &c, comp.is_opened)
+      remove_json_offset(ui_state)
+      label(ui_state, "},", color = COLOR_SUBTLE) 
+    case JSArray:
+      label(ui_state, "[", color = COLOR_SUBTLE) 
+      end_layout(ui_state)
+      add_json_offset(ui_state)
+      draw_array_values(ui_state, &c, comp.is_opened)
+      remove_json_offset(ui_state)
+      label(ui_state, "],", color = COLOR_SUBTLE)
+  }
+}
+
+draw_array_values :: proc(ui_state: ^UIState, value: ^JSArray, is_opened: bool) {
+  if !is_opened {
+    for indx := 0; indx < len(value); indx += 1 {
+      draw_closed_value(ui_state, &value[indx], indx < len(value) - 1)
+		}
+  } else {
+    for indx := 0; indx < len(value); indx += 1 {
+      switch &v in value[indx] {
+        case JSComposite:
+          if !v.is_opened {
+            begin_layout(ui_state, .Horz)
+            draw_js_composite(ui_state, &v)
+            label(ui_state, ",", color = COLOR_SUBTLE)
+            end_layout(ui_state)
+          } else {
+            begin_layout(ui_state, .Vert)
+            begin_layout(ui_state, .Horz)
+            if open_close_json(ui_state, &v) {
+                v.is_opened = false
+            }
+            draw_opened_value(ui_state, &v)
+            end_layout(ui_state)
+          }
+        case JSPrime:
+          draw_coll_plain_value(ui_state, v) 
+      }
+		}
+  }
+}
+
 draw_array :: proc(
 	ui_state: ^UIState,
 	value: ^JSArray,
-	is_opened: bool,
+  comp:  ^JSComposite,
 ) {
+  is_opened := comp.is_opened
 	if !is_opened {
     begin_layout(ui_state, .Horz)
-		label(ui_state, "[ ", color = COLOR_SUBTLE)
-		for indx := 0; indx < len(value); indx += 1 {
-			switch js_val in value[indx] {
-			case JSComposite:
-				draw_closed_composite(ui_state, js_val)
-			case JSPrime:
-				draw_js_prime(ui_state, js_val)
-			}
-			if indx < len(value) - 1 {
-        label(ui_state, ", ", color = COLOR_SUBTLE)
-			}
-		}
+    if open_close_json(ui_state, comp) {
+      comp.is_opened = true
+    }
+    label(ui_state, "[ ", color = COLOR_SUBTLE)
+    draw_array_values(ui_state, value, is_opened)	
     label(ui_state, " ]", color = COLOR_SUBTLE)
     end_layout(ui_state)
 	} else {
-    begin_layout(ui_state, .Vert)
-		label(ui_state, "[ ", color = COLOR_SUBTLE)
-		for indx := 0; indx < len(value); indx += 1 {
-      begin_layout(ui_state, .Horz)
-      draw_json_value(ui_state, &value[indx])
-      label(ui_state, ",", color = COLOR_SUBTLE)
-      end_layout(ui_state)
-		}
-    label(ui_state, " ]", color = COLOR_SUBTLE)
+    begin_layout(ui_state, .Horz)
+    if open_close_json(ui_state, comp) {
+      comp.is_opened = false
+    }
+		begin_layout(ui_state, .Vert)
+    label(ui_state, "[", color = COLOR_SUBTLE)
+    add_json_offset(ui_state)
+    draw_array_values(ui_state, value, is_opened)
+    remove_json_offset(ui_state)
+		label(ui_state, "]", color = COLOR_SUBTLE)
     end_layout(ui_state)
-
+    end_layout(ui_state)
 	}
 	return
 }
@@ -504,21 +560,25 @@ remove_json_offset :: proc(ui_state: ^UIState) {
   add_horz_padding_to_layout(ui_state, -get_padding_size(ui_state))
 }
 
+draw_closed_value :: #force_inline proc(ui_state: ^UIState, value: ^JSValue, comma: bool) {
+  switch js_val in value {
+  case JSComposite:
+    draw_closed_composite(ui_state, js_val)
+  case JSPrime:
+    draw_js_prime(ui_state, js_val)
+  }
+  if comma {
+    label(ui_state, ", ")
+  }
+}
+
 draw_object_values :: proc(ui_state: ^UIState, value: ^JSObject, is_opened: bool) {
   if !is_opened {
     for indx := 0; indx < len(value); indx += 2 {
       key := (value[indx].(JSPrime).(json.String))
       begin_layout(ui_state, .Horz)
       draw_object_key(ui_state, key)
-			switch js_val in value[indx + 1] {
-			case JSComposite:
-				draw_closed_composite(ui_state, js_val)
-			case JSPrime:
-				draw_js_prime(ui_state, js_val)
-			}
-			if indx < len(value) - 2 {
-        label(ui_state, ", ")
-			}
+      draw_closed_value(ui_state, &value[indx + 1], indx < len(value) - 2)
       end_layout(ui_state)
 		}
   } else {
@@ -527,29 +587,19 @@ draw_object_values :: proc(ui_state: ^UIState, value: ^JSObject, is_opened: bool
       switch &v in value[indx + 1] {
         case JSComposite:
           if !v.is_opened {
-
             begin_layout(ui_state, .Horz)
             draw_object_key(ui_state, key)
             draw_js_composite(ui_state, &v)
+            label(ui_state, ",", color = COLOR_SUBTLE)
             end_layout(ui_state)
           } else {
             begin_layout(ui_state, .Vert)
             begin_layout(ui_state, .Horz)
             draw_object_key(ui_state, key)
-            if text_button(ui_state, ID(uintptr(&v)), "▼") {
+            if open_close_json(ui_state, &v) {
                 v.is_opened = false
             }
-            switch &c in v.val {
-              case JSObject:
-                label(ui_state, "{", color = COLOR_SUBTLE) 
-                end_layout(ui_state)
-                add_json_offset(ui_state)
-                draw_object_values(ui_state, &c, v.is_opened)
-                remove_json_offset(ui_state)
-              case JSArray:
-                unimplemented() 
-            }
-            label(ui_state, "},", color = COLOR_SUBTLE) 
+            draw_opened_value(ui_state, &v)
             end_layout(ui_state)
           }
         case JSPrime:
@@ -571,7 +621,7 @@ draw_object :: proc(
   is_opened := comp.is_opened
 	if !is_opened {
     begin_layout(ui_state, .Horz)
-    if text_button(ui_state, ID(uintptr(comp)), "▶") { 
+    if open_close_json(ui_state, comp) { 
       comp.is_opened = true
     }
     label(ui_state, "{ ", color = COLOR_SUBTLE)
@@ -580,7 +630,7 @@ draw_object :: proc(
     end_layout(ui_state)
 	} else { 
     begin_layout(ui_state, .Horz)
-    if text_button(ui_state, ID(uintptr(comp)), "▼") {
+    if open_close_json(ui_state, comp) {
       comp.is_opened = false
     }
     begin_layout(ui_state, .Vert)
@@ -601,7 +651,7 @@ draw_js_composite :: proc(
 ) {
 	switch &v in value.val {
 	case JSArray:
-		draw_array(ui_state, &v, value.is_opened)
+		draw_array(ui_state, &v, value)
 	case JSObject:
 		draw_object(ui_state, &v, value)
 	}
@@ -758,23 +808,16 @@ text_width :: proc(font: mu.Font, text: string) -> i32 {
 }
 
 process_frame :: proc(ui_state: ^UIState, msg: ^JSValue) {
-  fmt.println("MSG: ", msg)
-	//w := renderer.measure_text(ui_state.r, " ", {0, 0}, COLOR_TEXT, 1)
 	x, y: i32
 	x = 8
 	y = 8
 
   ui_begin(ui_state, {x, y})
-  /* 
-  if button(ui_state, 1, "▶", COLOR_TEXT, make_paddings(4)) {
-    fmt.println("CLICKED")
-  }
-  */
 	draw_json_value(ui_state, msg)
   ui_end(ui_state)
 }
 
-process_events :: proc(app_state: ^AppState) {
+process_events :: #force_inline proc(app_state: ^AppState) {
 	assert(app_state != nil)
 	r := app_state.ui_state.r
 	xraw, yraw := glfw.GetCursorPos(r.window_handle)
@@ -791,10 +834,12 @@ main_loop :: proc(app_state: ^AppState) {
 	gl.BindTexture(gl.TEXTURE_2D, r.white_tex.id)
 	msg := convert_to_js(app_state.msg)
 	for !glfw.WindowShouldClose(r.window_handle) {
-		glfw.PollEvents()
-
-		renderer.clean(r)
+		glfw.WaitEvents()
     process_events(app_state)
+    process_events(app_state)
+    process_frame(app_state.ui_state, &msg)
+    renderer.flush(r)
+		renderer.clean(r)
     process_frame(app_state.ui_state, &msg)
     renderer.flush(r)
 		glfw.SwapBuffers(r.window_handle)
